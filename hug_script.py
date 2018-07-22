@@ -17,9 +17,14 @@ from bitshares.instance import set_shared_bitshares_instance # Used to reduce bi
 import bitshares
 import hug
 import requests
+from pathlib import Path
 import pendulum
 import math
 import statistics
+
+from bs4 import BeautifulSoup
+import re
+import json
 
 full_node_list = [
 	"wss://eu.nodes.bitshares.works", #location: "Central Europe - BitShares Infrastructure Program"
@@ -30,7 +35,6 @@ full_node_list = [
 	"wss://api.bts.blckchnd.com", #location: "Falkenstein, Germany"
 	"wss://openledger.hk/ws", #location: "Hong Kong"
 	"wss://bitshares-api.wancloud.io/ws", #location:  "China"
-	"wss://dex.rnglab.org", #location: "Netherlands"
 	"wss://dexnode.net/ws", #location: "Dallas, USA"
 	"wss://kc-us-dex.xeldal.com/ws", #location: "Kansas City, USA"
 	"wss://la.dexnode.net/ws" #location: "Los Angeles, USA"
@@ -42,10 +46,9 @@ full_node_list_http = [
 	"https://api.bts.blckchnd.com", #location: "Falkenstein, Germany"
 	"https://openledger.hk/ws", #location: "Hong Kong"
 	"https://bitshares-api.wancloud.io/ws", #location:  "China"
-	"https://dex.rnglab.org", #location: "Netherlands"
 	"https://dexnode.net/ws", #location: "Dallas, USA"
 	"https://kc-us-dex.xeldal.com/ws", #location: "Kansas City, USA"
-	"https://la.dexnode.net/ws", #location: "Los Angeles, USA"
+	"https://la.dexnode.net/ws" #location: "Los Angeles, USA"
 ]
 
 bitshares_api_node = BitShares(full_node_list, nobroadcast=True) # True prevents TX being broadcast through the HUG REST API
@@ -1069,6 +1072,102 @@ def list_fees(api_key: hug.types.text, hug_timer=5):
 		return {'network_fees': extracted_fees,
 				'valid_key': True,
 				'took': float(hug_timer)}
+	else:
+	# API KEY INVALID!
+		return {'valid_key': False,
+				'took': float(hug_timer)}
+
+###############################################
+
+def scrape_blocktivity():
+	"""
+	A function to scrape blocktivity.
+	Outputs to JSON.
+	"""
+	scraped_page = requests.get("https://blocktivity.info")
+	if scraped_page.status_code == 200:
+		soup = BeautifulSoup(scraped_page.text, 'html.parser')
+		crypto_rows = soup.findAll('tr', attrs={'class': 'font_size_row'})
+
+		blocktivity_summary = []
+		for row in crypto_rows:
+			crypto_columns = row.findAll('td')
+			ranking = re.sub('<[^>]+?>', '', str(crypto_columns[0]))
+			#logo = (str(crypto_columns[1]).split('cell">'))[1].split('</td')[0]
+			name = re.sub('<[^>]+?>', '', str(crypto_columns[2])).split(' ⓘ')
+			activity = re.sub('<[^>]+?>', '', str(crypto_columns[3])).strip('Op ')
+			average_7d = re.sub('<[^>]+?>', '', str(crypto_columns[4])).strip('Op ')
+			record = re.sub('<[^>]+?>', '', str(crypto_columns[5])).strip('Op ')
+			market_cap = re.sub('<[^>]+?>', '', str(crypto_columns[6]))
+			AVI = re.sub('<[^>]+?>', '', str(crypto_columns[7]))
+			CUI = re.sub('<[^>]+?>', '', str(crypto_columns[8])).strip('ⓘ')
+
+			blocktivity_summary.append({'rank': ranking, 'ticker': name[0], 'name': name[1], 'activity': activity, 'average_7d':average_7d, 'record': record, 'market_cap': market_cap, 'AVI': AVI, 'CUI':CUI})
+
+		now = pendulum.now() # Getting the time
+		current_timestamp = int(round(now.timestamp())) # Converting to timestamp
+
+		write_json_to_disk('blocktivity.json', {'timestamp': current_timestamp, 'blocktivity_summary': blocktivity_summary}) # Storing to disk
+
+		return {'timestamp': current_timestamp, 'blocktivity_summary': blocktivity_summary}
+	else:
+		return None
+
+def write_json_to_disk(filename, json_data):
+	"""
+	When called, write the json_data to a json file.
+	"""
+	with open(filename, 'w') as outfile:
+		json.dump(json_data, outfile)
+
+def return_json_file_contents(filename):
+	"""
+	Simple function for returning the contents of the input JSON file
+	"""
+	try:
+		with open(filename) as json_data:
+			return json.load(json_data)
+	except IOError:
+		print("File not found: "+filename)
+		return None
+
+@hug.get(examples='api_key=API_KEY')
+def current_blocktivity(api_key: hug.types.text, hug_timer=5):
+	"""Output the current Blocktivity stats."""
+	if (check_api_token(api_key) == True): # Check the api key
+	# API KEY VALID
+
+		file_path = "./blocktivity.json"
+		need_to_download = True
+		existing_file_check = Path(file_path)
+		MAX_STATS_LIFETIME = 60
+
+		if existing_file_check.is_file():
+			existing_json = return_json_file_contents("./blocktivity.json")
+			now = pendulum.now() # Getting the time
+			current_timestamp = int(round(now.timestamp())) # Converting to timestamp
+
+			if (current_timestamp - int(existing_json['timestamp']) < MAX_STATS_LIFETIME):
+				"""Data is still valid - let's return it instead of fetching it!"""
+				print("Blocktivity JSON within lifetime - using cached copy!")
+				blocktivity_storage = existing_json
+			else:
+				"""No existing file"""
+				print("Blocktivity JSON too old - downloading fresh copy!")
+				blocktivity_storage = scrape_blocktivity()
+		else:
+			"""File doesn't exist"""
+			blocktivity_storage = scrape_blocktivity()
+
+		if blocktivity_storage != None:
+			return {'result': blocktivity_storage,
+					'valid_key': True,
+					'took': float(hug_timer)}
+		else:
+			return {'valid_key': True,
+					'success': False,
+					'error_message': 'blocktivity storage returned None!',
+					'took': float(hug_timer)}
 	else:
 	# API KEY INVALID!
 		return {'valid_key': False,
